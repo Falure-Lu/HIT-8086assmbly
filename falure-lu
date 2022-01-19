@@ -1,0 +1,494 @@
+assume cs:code,ss:stack,ds:data		        ;小型存储模式
+data segment    		;定义数据段
+	Min db 'please input Min:','$'		;用户输入提示
+	Max db 'please input Max:','$'
+	Begin db 'Begin! ','$'				;开始计算
+	Complete db 'Complete! ','$'		;结束计算
+	Rslt db 'Result:','$'				;结果输出提示
+	maxlen db 10				;输入数字的最大长度为10
+	actlen db ?					;输入数字的实际长度
+	inputnum db 10 dup(?)		;存放输入数字区间的字符形式
+	result dw  100 dup(0)		;存入亲密数
+	cnt dw 0					;存入亲密数的数量
+	string db 20 dup(0)			;临时存入每对亲密数的字符串形式
+
+data ends
+
+stack segment stack				;自动初始化堆栈段
+	dw 100 dup(0)
+	btw dw ?
+stack ends
+
+code segment                   ;定义代码段
+start:  mov ax, data       	;装数据段(段
+		mov	ds, ax          	;地址送DS)
+		mov ax,stack			;上面stack用了伪指令,此处其实可省
+		mov ss,ax
+		mov sp,offset btw		;设置栈底
+
+		mov dx,offset Min		;调用中断输出提示字符串
+		mov ah,09h
+		int 21h
+		call inputToAXinDec		;先输入Min,返回值存ax
+		push ax					;Min值先入栈暂存
+
+		mov dx,offset Max		;调用中断输出提示字符串
+		mov ah,09h
+		int 21h
+		call inputToAXinDec		;再输入Max,返回值存ax
+		mov cx,ax				;cx存最大值
+
+		mov dx,offset Begin		;调用中断输出提示字符串
+		mov ah,09h
+		int 21h
+
+		call showDate			;输出当前系统时间
+
+		mov dx,offset Rslt		;调用中断输出提示字符串
+		mov ah,09h
+		int 21h
+		call printCRLF			;输出回车换行
+		pop ax					;ax存最小值
+
+		mov  bx,ax           	;bx为循环变量i,从(ax)自增至(cx)
+cal:    ;bx为当前循环变量i
+		mov si,bx				;si作为参数传参(寄存器传参)
+		call factorSum3       	;调用子程序求si的约数和
+		;返回值为si的约数和,存di寄存器
+		;先判断约数和是否小于i
+		cmp di,bx				;若小于等于i,直接跳过
+		jbe next				;减少不必要的运算!
+		;再判断di在不在区间内,不需要判断di<ax的清况!
+		; cmp  di,ax			;
+		; jb   next            	;di<ax则转
+		cmp  di,cx           	;di>cx则转
+		ja   next
+		;不转则i的约数和(di)在区间内,再计算(di)的约数和
+		mov  si,di        		;si存i的约数和,传参
+		call factorSum3       	;求i的约数和的约数和
+		;结果存di,此时bx为i,si存i的约束和,di存si的约束和
+		cmp  bx,di         		;i与其约数和的约数和比较
+		jne  next            	;!=则不是亲密数
+		;否则相等,找到一对亲密数
+		; cmp bx,si
+		; jae next				;去重,只有bx<si才存
+        call store				;bx和si作为参数传递,存入result并向屏幕输出
+
+next:	inc  bx					;循环变量i自增1
+		je exit0				;如果bx增一后变为0,则说明bx原来为65535,直接退出
+		cmp  bx,cx				;判断是否到达上界
+		jbe  cal
+
+exit0:	mov dx,offset Complete		;调用中断输出提示字符串
+		mov ah,09h
+		int 21h
+
+		call showDate			;输出当前系统时间
+		
+		mov  ax, 4c00h       	;调用21H号中
+		int  21h             	; 断，返回
+
+factorSum3 proc near;版本3,开平方根,一次加两个约数			;计算si中数的约数和,结果存di
+		;本子程序没有改变si的值
+		push ax
+		push bx
+		push dx
+		;di最终存返回值,注意不要保护di现场,保护现场交给调用者
+		mov di,0
+		cmp si,1
+		je returnSum			;1的约数和为0,di存0返回
+		inc di					;否则1必定是di的约数,di先把1加上
+		mov dx,0
+		mov ax,si				;(dx,ax)存si的32位值
+		call mySqrt				;求si的平方根,结果存ax
+		mov bx,ax				;bx为循环变量i,初值为平方根
+		mul ax					;(dx,ax)==(ax)存平方根的平方,此处dx必定仍为0
+		cmp ax,si
+		jne next5				;不相等(小于)则转
+		;否则di值加上刚刚求得的平方根
+		add di,bx				
+		dec bx					;循环变量i自减1
+next5:	
+		cmp bx,1
+		jbe returnSum			;小于等于1则返回约束和di
+		;否则bx大于等于2,继续求约数和
+		xor dx,dx				;dx清零
+		mov ax,si				;(dx,ax)存si
+		div bx					;dx存si/bx的余数,ax存si/bx的商
+		cmp dx,0
+		jne next6				;余数不为0,说明bx不是si的约数
+		;否则bx是si的约数,将bx和si/bx都加入di中
+		add di,bx
+		add di,ax
+
+next6:	dec bx					;循环变量自减1,进入下一次循环
+		jmp next5
+returnSum:	
+		pop dx
+		pop bx
+		pop ax
+		ret
+factorSum3 endp
+
+mySqrt proc near				;求(dx,ax)的平方根(取整),平方根存ax,不改变dx值
+;实现0~40000000h之间数的开方运算,对应平方根为0~32768
+		push dx					;因为最终返回结果只存在ax中,故在此处将dx的值入栈保存
+		push bx
+		push cx
+
+		mov cx,ax				;(dx,cx)存原来的值
+		mov ax,-1				;ax存平方根
+		mov bx,1				;bx为循环变量i
+
+subOdd:	test dx,8000h			;判断dx最高位是否为1,为1说明(dx,cx)<0
+		jne exit3				;若cx<0则退出循环
+		;否则cx>=0
+		sub cx,bx				;减奇数
+		sbb dx,0				;若cx有借位,则dx减1
+		inc ax					;平方根加1
+		add bx,2				;i=i+2
+		jmp subOdd
+
+exit3:	pop cx
+		pop bx
+		pop dx
+		ret
+mySqrt endp
+
+store proc near					;bx和si作为参数传递
+		push ax					;bx和si为要存入的值
+		push bx
+		push dx
+		push di
+		push si
+
+		mov ax,bx				;ax存亲密数1
+		mov di,offset cnt
+		mov bx,[di]				;bx存目前结果数量
+		add bx,bx				;bx*2为待存入亲密数的地址
+		mov result[bx],ax		;存入亲密数1
+		add bx,2
+		mov result[bx],si		;存入亲密数2
+		add bx,2				;这条语句别忘了!!!不然下次的结果会覆盖掉上次的一个结果
+		;下面先向屏幕输出ax对应十进制的值
+		call printAXinDec				;ax为传入参数
+		;调用21号中断02h号功能输出空格
+		mov dl,' '				;dl存输出字符的asii
+		mov ah,02h
+		int 21h
+		;下面再向屏幕输出si对应十进制的值
+		mov ax,si				;ax为printAXinDec的传入参数
+		call printAXinDec
+		call printCRLF
+		;下面将新结果的数量存入cnt
+		mov dx,0
+		mov ax,bx				;结果数不会很多,不会发生除法溢出
+		mov bx,2				
+		
+		div bx					;ax存商,即新cnt
+		mov [di],ax
+
+		pop si
+		pop di
+		pop dx
+		pop bx
+		pop ax
+		ret
+store endp
+
+printCRLF proc near				;打印一次回车换行
+		push ax
+		push dx
+		;输出回车换行,调用21号中断02h号功能
+		mov dl,0dh				;回车
+		mov ah,02h
+		int 21h
+		mov dl,0ah				;换行
+		mov ah,02h
+		int 21h
+		pop dx
+		pop ax
+		ret
+printCRLF endp
+
+printAXinDec proc near			;向屏幕以字符串形式输出ax对应十进制的值,ax为传入参数
+		;子程序不修改ax的值,不输出回车换行,不输出任何后缀
+		push ax
+		push bx
+		push cx
+		push dx
+		push di
+
+		mov di,offset string	;di指向要存入的地址
+		cmp ax,0				
+		jz zero					;ax为0直接跳至zero
+		;否则ax不为0
+		mov bx,10				;每次除10得各位值
+		xor cx,cx				;cx存压栈次数
+
+next3:	xor dx,dx				;(dx ax)/bx
+		div bx					;余数存dx,商存ax
+		push dx					;将当前余数压栈
+		inc cx					;cx存压栈次数
+		cmp ax,0				;判断商是否为0
+		jz reverse				;为0则跳至reverse
+		jmp next3				;否则不为0,继续处理
+
+zero:	;为0,直接存入0
+		mov byte ptr [di],'0'
+		inc di
+		mov byte ptr [di],'$'
+		jmp exit2				;退出
+
+reverse:;此时cx存压栈次数,di指向要存入的地址
+		pop ax
+		add al,30h				;将数字转化成对应的asii码
+		mov [di],al				;注意是al!
+		inc di
+		loop reverse
+		mov byte ptr [di],'$'
+exit2:	mov dx,offset string	;调用中断输出字符串
+		mov ah,09h
+		int 21h
+		
+		pop di
+		pop dx
+		pop cx
+		pop bx
+		pop ax
+		ret
+printAXinDec endp
+
+printAXinHex proc near			;向屏幕以字符串形式输出ax对应16进制的值,ax为传入参数
+		;不改变ax中的值,不输出后缀h,不输出回车换行
+		push ax
+		push bx
+		push cx
+		push dx
+
+		mov dh,0				;用于计数，总共4次
+		mov cl,4				;移位位数放入cl中
+nextOutHex:
+		rol ax,cl				;不带进位循环左移4位,然后处理输出最低4位的值
+		mov bx,ax				;ax数值放入bx暂存
+		and al,0fh				;只保留最低四位
+		
+		cmp al,9				;先判断输入的是不是数字
+		ja outaf				;若大于9,则应输出字母
+		;否则应输出数字
+		add al,30h				;得到对应数字0~9的asii码
+		jmp outHex
+
+outaf:	;输出对应的a~f字母
+		add al,87				;得到对应字母a~f的asii码
+
+outHex:	mov dl,al
+		mov ah,02h				;调用21号中断02h号功能,输出dl中的asii字符
+		int 21h
+
+		mov ax,bx				;恢复ax中的值
+		inc dh
+		cmp dh,4
+		jne nextOutHex			;没到四次继续处理
+		;否则退出子程序
+		pop dx
+		pop cx
+		pop bx
+		pop ax
+		ret
+
+printAXinHex endp
+
+inputToAXinDec proc near				;键盘输入十进制数字转化为ax中的值
+		;默认输入数字0~65535,ax为返回值
+		;输入负数,返回1,输入数字超过65535,返回对65536取余后的结果
+		;用到int 21h 0ah号中断
+		push bx
+		push cx
+		push dx
+		push si
+		push di
+
+		lea dx,maxlen
+		mov ah,0ah				;调用int 21h 0ah号中断
+		int 21h					;将键盘输入的数字字符,存入inputnum中
+		;下面将inputnum中的数字字符串转为ax中的值
+		mov si,offset inputnum
+		mov bx,offset actlen
+		mov ch,0
+		mov cl,[bx]				;cx存字符个数
+		cmp cx,0				;未输入字符
+		je return1				;返回的ax为1
+		cmp byte ptr [si],'-'	;输入的是负数
+		je return1				;也返回1
+		;否则输入一个正数,将其转换为ax中的值
+		mov di,10
+		xor dx,dx
+		xor ax,ax				;ax存放最终的转换结果
+
+next4:	mul di					;ax*10->ax
+		mov bl,[si]				;注意这里是bl,不是bx!
+		sub bl,30h				
+		mov bh,0				;bx存当前最低位
+		add ax,bx				
+		inc si
+		loop next4
+
+		jmp returnAX
+return1:mov ax,1
+returnAX:
+		call printCRLF			;打印一次回车换行
+		pop di
+		pop si
+		pop dx
+		pop cx
+		pop bx
+		ret
+inputToAXinDec endp
+
+inputToAXinHex proc near		;从键盘输入四位16进制数,将其转换至ax寄存器中
+		;合法输入为0~9与a~f与A~F,	ax存最终结果返回
+		push bx
+		push cx
+		push dx
+
+		xor bx,bx				;bx暂存结果
+		mov dx,4 				;dx为循环次数
+		mov cl,4
+nextInHex:
+		shl bx,cl				;先左移4位
+		;调用系统中断,从键盘接收一个字符,将其asii码存入寄存器al中
+		mov ah,1
+		int 21h
+
+		cmp al,40h				;先判断输入的是不是数字
+		ja nextaf				;大于40h,则输入的是字母
+		;否则认为输入的是数字
+		sub al,30h
+		jmp next7
+
+nextaf:	;输入合法时,此时al中的值应为a~f或A~F
+		and al,0fh				;将al高四位置0,此时al低四位为1~6,对应a~f
+		add al,9				;转化为a~f对应的数字
+
+next7:	or bl,al				;得到一位16进制数
+		dec dx
+		cmp dx,0
+		jne nextInHex			;dx未到0则继续执行
+		;否则到四次结束,返回结果
+
+		mov ax,bx				;结果存ax返回
+		pop dx
+		pop cx
+		pop bx
+		ret
+		
+inputToAXinHex endp
+
+showDate proc near				;输出系统当前的 年-月-日 时:分:秒
+		push ax
+		push dx
+
+		;首先先输出年份
+		mov dl,'2'				;输出2
+		mov ah,2
+		int 21h
+		mov dl,'0'				;输出0
+		mov ah,2
+		int 21h
+		;然后访问CMOS RAM的内容,获取日期信息
+		;需要首先向I/O地址70h输出要访问的字节编号，然后用I/O地址71h读对应的信息
+		mov al,9				;9号单元存放年份的后两位
+		out 70h,al
+		in al,71h				;获取年份后两位,返回的值存在al中,采用8421BCD码编码
+		call outputALbyBCD		;将al中BCD码的值转为十进制输出
+
+		mov dl,'-'
+		mov ah,02h
+		int 21h					;调用21号中断02h号功能,这里输出一个'-'
+
+		;然后输出月份,同理
+		mov al,8				;8号单元存放当前月份
+		out 70h,al
+		in al,71h				;获取当前月份,返回的值存在al中,采用8421BCD码编码
+		call outputALbyBCD		;将al中BCD码的值转为十进制输出
+
+		mov dl,'-'
+		mov ah,02h
+		int 21h					;调用21号中断02h号功能,这里输出一个'-'
+
+		;然后输出日期,同理
+		mov al,7				;7号单元存放当前日期
+		out 70h,al
+		in al,71h				;获取当前日期,返回的值存在al中,采用8421BCD码编码
+		call outputALbyBCD		;将al中BCD码的值转为十进制输出
+
+		mov dl,' '
+		mov ah,02h
+		int 21h					;调用21号中断02h号功能,这里输出一个' '
+
+		;然后输出小时,同理
+		mov al,4				;4号单元存放当前小时数
+		out 70h,al
+		in al,71h				;获取当前小时数,返回的值存在al中,采用8421BCD码编码
+		call outputALbyBCD		;将al中BCD码的值转为十进制输出
+
+		mov dl,':'
+		mov ah,02h
+		int 21h					;调用21号中断02h号功能,这里输出一个':'
+
+		;然后输出分钟,同理
+		mov al,2				;2号单元存放当前分钟数
+		out 70h,al
+		in al,71h				;获取当前分钟数,返回的值存在al中,采用8421BCD码编码
+		call outputALbyBCD		;将al中BCD码的值转为十进制输出
+
+		mov dl,':'
+		mov ah,02h
+		int 21h					;调用21号中断02h号功能,这里输出一个':'
+
+		;然后输出秒数,同理
+		mov al,0				;0号单元存放当前秒数
+		out 70h,al
+		in al,71h				;获取当前秒数,返回的值存在al中,采用8421BCD码编码
+		call outputALbyBCD		;将al中BCD码的值转为十进制输出
+
+		call printCRLF
+
+		pop dx
+		pop ax
+		ret
+
+showDate endp
+
+outputALbyBCD proc near			;将al中BCD码的值转为十进制输出
+		;子程序不改变al的值,不输出回车换行
+		push ax
+		push cx
+		push dx
+
+		mov ch,al				;ch暂存al的值
+		mov cl,4				;cl存放移位位数
+		rol al,cl				;先输出高四位对应的数,故将高四位移到低四位上
+		and al,0fh				;只保留后四位
+		mov dl,al
+		add dl,30h				;转换为对应的asii
+		mov ah,02h
+		int 21h					;调用21号中断02h号功能,输出dl中的asii字符
+		
+		;然后输出第二个数,同理
+		mov dl,ch
+		and dl,0fh				;只要后四位
+		add dl,30h
+		mov ah,02h
+		int 21h					;调用21号中断02h号功能,输出dl中的asii字符
+		
+		pop dx
+		pop cx
+		pop ax
+		ret
+
+outputALbyBCD endp
+
+code ends
+end	start				        ; 结束汇编
